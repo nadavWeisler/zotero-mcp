@@ -169,7 +169,14 @@ Pass `start=<next offset>` and the same `limit` to retrieve subsequent pages.
 
 ```bash
 uv sync --extra dev
-uv run pytest
+uv run pytest tests/ -v
+```
+
+If you installed with `pip`:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/ -v
 ```
 
 ### Project layout
@@ -183,6 +190,7 @@ zotero-mcp/
 │   ├── formatters.py     # Text output formatters
 │   └── tools.py          # MCP tool implementations
 └── tests/
+    ├── test_main.py
     ├── test_client.py
     ├── test_formatters.py
     └── test_tools.py
