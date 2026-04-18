@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nadavWeisler/zotero-mcp",
+  "title": "Zotero MCP",
+  "description": "Read-only MCP server for searching and browsing a Zotero reference library.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/nadavWeisler/zotero-mcp",
+    "source": "github",
+    "id": "998362405"
+  },
+  "websiteUrl": "https://github.com/nadavWeisler/zotero-mcp",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "nadavweisler-zotero-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

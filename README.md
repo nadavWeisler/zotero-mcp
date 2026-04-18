@@ -1,6 +1,7 @@
 # zotero-mcp
 
 An [MCP](https://modelcontextprotocol.io/) server that exposes your [Zotero](https://www.zotero.org/) library to AI assistants such as Claude.
+<!-- mcp-name: io.github.nadavWeisler/zotero-mcp -->
 
 ## Features
 
@@ -54,6 +55,12 @@ uv sync
 
 ```bash
 uv run python main.py
+```
+
+Or run the installed package entrypoint:
+
+```bash
+python -m zotero_mcp
 ```
 
 ## Connecting to Claude Desktop
@@ -205,3 +212,19 @@ zotero-mcp/
   `search_items`, `list_tags`, `get_item_children`
 - Automatic retry on rate-limit (HTTP 429) and transient network errors
 - Pagination support with next-page hints in every list response
+
+## MCP Registry publishing
+
+This repository includes a `server.json` file for MCP Registry publication under:
+
+- `name`: `io.github.nadavWeisler/zotero-mcp`
+- `registryType`: `pypi`
+- `identifier`: `nadavweisler-zotero-mcp`
+
+To complete publication:
+
+1. Publish version `0.1.0` (or newer) of `nadavweisler-zotero-mcp` to PyPI.
+2. Install `mcp-publisher`.
+3. Run:
+   - `mcp-publisher login github`
+   - `mcp-publisher publish`
