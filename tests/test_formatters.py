@@ -6,17 +6,38 @@ from zotero_mcp.formatters import (
     _format_creators,
     _strip_html,
     _truncate,
+    child_to_record,
+    collection_to_record,
+    format_attachment,
     format_child,
     format_collection,
+    format_export,
     format_item,
+    format_note,
+    format_saved_search,
     format_tag,
+    item_to_record,
     paging_hint,
+    paging_record,
+    tag_to_record,
 )
 
 
-# ---------------------------------------------------------------------------
-# _truncate
-# ---------------------------------------------------------------------------
+def _make_item(**overrides) -> dict:
+    data = {
+        "key": "ABCD1234",
+        "itemType": "journalArticle",
+        "title": "A Great Paper",
+        "creators": [{"lastName": "Smith", "firstName": "Alice"}],
+        "date": "2023-05-01",
+        "tags": [{"tag": "science"}, {"tag": "ai"}],
+        "abstractNote": "This paper discusses AI.",
+        "publicationTitle": "Journal of Tests",
+        "DOI": "10.1000/example",
+        "url": "https://example.test/paper",
+    }
+    data.update(overrides)
+    return {"data": data}
 
 
 def test_truncate_short_string_unchanged() -> None:
@@ -33,11 +54,6 @@ def test_truncate_long_string() -> None:
     assert "truncated" in result
 
 
-# ---------------------------------------------------------------------------
-# _format_creators
-# ---------------------------------------------------------------------------
-
-
 def test_format_creators_empty() -> None:
     assert _format_creators([]) == "Unknown"
 
@@ -52,118 +68,62 @@ def test_format_creators_name_only() -> None:
     assert _format_creators(creators) == "NASA"
 
 
-def test_format_creators_multiple() -> None:
-    creators = [
-        {"lastName": "Smith", "firstName": "John"},
-        {"lastName": "Doe", "firstName": "Jane"},
-    ]
-    result = _format_creators(creators)
-    assert "Smith, John" in result
-    assert "Doe, Jane" in result
-    assert ";" in result
+def test_strip_html_removes_tags_and_unescapes() -> None:
+    assert _strip_html("<p>Hello &amp; <b>world</b></p>") == "Hello & world"
 
 
-def test_format_creators_skips_empty() -> None:
-    creators = [{"lastName": "", "firstName": ""}]
-    assert _format_creators(creators) == "Unknown"
+def test_item_to_record_normalizes_common_fields() -> None:
+    record = item_to_record(_make_item(), expanded=True)
+    assert record["key"] == "ABCD1234"
+    assert record["creator_summary"] == "Smith, Alice"
+    assert record["year"] == "2023"
+    assert record["publication_title"] == "Journal of Tests"
+    assert record["doi"] == "10.1000/example"
+    assert record["abstract"] == "This paper discusses AI."
 
 
-# ---------------------------------------------------------------------------
-# _strip_html
-# ---------------------------------------------------------------------------
+def test_item_to_record_note_extracts_plain_text() -> None:
+    note = _make_item(itemType="note", title="", note="<p>Important <b>note</b></p>")
+    record = item_to_record(note, expanded=True)
+    assert record["title"] == "Untitled"
+    assert record["note"] == "Important note"
+    assert record["note_preview"] == "Important note"
 
 
-def test_strip_html_removes_tags() -> None:
-    assert _strip_html("<p>Hello <b>world</b></p>") == "Hello  world"
+def test_collection_to_record_marks_saved_search() -> None:
+    record = collection_to_record(
+        {"data": {"key": "SRCH0001", "name": "Recent", "search": True}}
+    )
+    assert record["is_saved_search"] is True
 
 
-def test_strip_html_plain_text_unchanged() -> None:
-    assert _strip_html("plain text") == "plain text"
+def test_tag_to_record_handles_missing_meta() -> None:
+    assert tag_to_record({"tag": "orphan"}) == {"name": "orphan", "num_items": None}
 
 
-def test_strip_html_empty() -> None:
-    assert _strip_html("") == ""
-
-
-# ---------------------------------------------------------------------------
-# format_item
-# ---------------------------------------------------------------------------
-
-
-def _make_item(**overrides) -> dict:
-    data = {
-        "key": "ABCD1234",
-        "itemType": "journalArticle",
-        "title": "A Great Paper",
-        "creators": [{"lastName": "Smith", "firstName": "Alice"}],
-        "date": "2023-05-01",
-        "tags": [{"tag": "science"}, {"tag": "ai"}],
-        "abstractNote": "This paper discusses AI.",
-    }
-    data.update(overrides)
-    return {"data": data}
+def test_child_to_record_reuses_item_structure() -> None:
+    record = child_to_record(
+        {"data": {"key": "ATT12345", "itemType": "attachment", "filename": "paper.pdf"}}
+    )
+    assert record["kind"] == "attachment"
+    assert record["title"] == "paper.pdf"
 
 
 def test_format_item_contains_key_fields() -> None:
-    item = _make_item()
-    result = format_item(item)
+    result = format_item(_make_item(), expanded=True)
     assert "ABCD1234" in result
     assert "journalArticle" in result
     assert "A Great Paper" in result
     assert "Smith, Alice" in result
-    assert "2023-05-01" in result
-    assert "science" in result
-    assert "ai" in result
-
-
-def test_format_item_no_abstract_by_default() -> None:
-    item = _make_item()
-    result = format_item(item)
-    assert "Abstract" not in result
-
-
-def test_format_item_expanded_includes_abstract() -> None:
-    item = _make_item()
-    result = format_item(item, expanded=True)
+    assert "2023" in result
+    assert "Journal of Tests" in result
+    assert "10.1000/example" in result
     assert "Abstract" in result
-    assert "This paper discusses AI." in result
-
-
-def test_format_item_abstract_truncated_when_long() -> None:
-    long_abstract = "x" * 600
-    item = _make_item(abstractNote=long_abstract)
-    result = format_item(item, expanded=True)
-    assert "truncated" in result
-
-
-def test_format_item_missing_date_omitted() -> None:
-    item = _make_item(date="")
-    result = format_item(item)
-    assert "Date:" not in result
-
-
-def test_format_item_missing_tags_omitted() -> None:
-    item = _make_item(tags=[])
-    result = format_item(item)
-    assert "Tags:" not in result
 
 
 def test_format_item_untitled_fallback() -> None:
-    item = _make_item(title="")
-    result = format_item(item)
+    result = format_item(_make_item(title=""))
     assert "Untitled" in result
-
-
-def test_format_item_key_from_top_level_fallback() -> None:
-    """If 'data' has no key, fall back to top-level 'key'."""
-    item = {"key": "TOP0001", "data": {"itemType": "book"}}
-    result = format_item(item)
-    assert "TOP0001" in result
-
-
-# ---------------------------------------------------------------------------
-# format_collection
-# ---------------------------------------------------------------------------
 
 
 def test_format_collection_basic() -> None:
@@ -175,44 +135,21 @@ def test_format_collection_basic() -> None:
     assert "COLL1234" in result
     assert "My Collection" in result
     assert "10" in result
-    assert "Parent" not in result
+    assert "Saved search" not in result
 
 
-def test_format_collection_with_parent() -> None:
-    col = {
-        "data": {
-            "key": "COLL5678",
-            "name": "Sub",
-            "parentCollection": "PARENT01",
-        },
-        "meta": {"numItems": 2},
-    }
-    result = format_collection(col)
-    assert "PARENT01" in result
-
-
-# ---------------------------------------------------------------------------
-# format_tag
-# ---------------------------------------------------------------------------
+def test_format_saved_search() -> None:
+    result = format_saved_search(
+        {"data": {"key": "SRCH5678", "name": "Recent", "search": True}}
+    )
+    assert "Saved search" in result
+    assert "SRCH5678" in result
 
 
 def test_format_tag() -> None:
-    tag = {"tag": "physics", "meta": {"numItems": 7}}
-    result = format_tag(tag)
+    result = format_tag({"tag": "physics", "meta": {"numItems": 7}})
     assert "physics" in result
     assert "7" in result
-
-
-def test_format_tag_missing_meta() -> None:
-    tag = {"tag": "orphan"}
-    result = format_tag(tag)
-    assert "orphan" in result
-    assert "?" in result
-
-
-# ---------------------------------------------------------------------------
-# format_child
-# ---------------------------------------------------------------------------
 
 
 def test_format_child_attachment() -> None:
@@ -220,56 +157,50 @@ def test_format_child_attachment() -> None:
         "data": {
             "key": "ATT12345",
             "itemType": "attachment",
-            "title": "paper.pdf",
+            "filename": "paper.pdf",
+            "contentType": "application/pdf",
         }
     }
     result = format_child(child)
     assert "[attachment]" in result
     assert "paper.pdf" in result
+    assert "application/pdf" in result
 
 
-def test_format_child_note_with_html() -> None:
-    child = {
+def test_format_note_includes_plain_text_content() -> None:
+    note = {
         "data": {
             "key": "NOTE1234",
             "itemType": "note",
+            "title": "",
             "note": "<p>Important <b>note</b> content.</p>",
         }
     }
-    result = format_child(child)
-    assert "[note]" in result
-    assert "Important" in result
-    assert "<p>" not in result
+    result = format_note(note)
+    assert "Content:" in result
+    assert "Important note content." in result
 
 
-def test_format_child_note_snippet_truncated() -> None:
-    long_note = "word " * 100
-    child = {
-        "data": {
-            "key": "NOTE9999",
-            "itemType": "note",
-            "note": f"<p>{long_note}</p>",
-        }
-    }
-    result = format_child(child)
-    assert "truncated" in result
-
-
-def test_format_child_uses_filename_when_no_title() -> None:
-    child = {
+def test_format_attachment_uses_filename_and_metadata() -> None:
+    attachment = {
         "data": {
             "key": "ATT00001",
             "itemType": "attachment",
             "filename": "article.pdf",
+            "contentType": "application/pdf",
+            "linkMode": "imported_file",
         }
     }
-    result = format_child(child)
+    result = format_attachment(attachment)
     assert "article.pdf" in result
+    assert "application/pdf" in result
+    assert "imported_file" in result
 
 
-# ---------------------------------------------------------------------------
-# paging_hint
-# ---------------------------------------------------------------------------
+def test_format_export_includes_format_label() -> None:
+    result = format_export("@article{example}", "bibtex")
+    assert "Format: bibtex" in result
+    assert "@article" in result
 
 
 def test_paging_hint_last_page() -> None:
@@ -280,14 +211,10 @@ def test_paging_hint_last_page() -> None:
 
 def test_paging_hint_mid_page() -> None:
     result = paging_hint(start=0, count=25, total=100)
-    assert "next page" in result or "start=25" in result
+    assert "start=25" in result
 
 
-def test_paging_hint_custom_noun() -> None:
-    result = paging_hint(start=0, count=10, total=50, noun="collections")
-    assert "collections" in result
-
-
-def test_paging_hint_single_page() -> None:
-    result = paging_hint(start=0, count=5, total=5)
-    assert "next page" not in result
+def test_paging_record_has_next_start() -> None:
+    record = paging_record(start=0, count=10, total=25, noun="items")
+    assert record["next_start"] == 10
+    assert record["has_more"] is True

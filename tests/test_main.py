@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 import main
+from zotero_mcp import __main__ as package_main
 
 
 def test_create_client_with_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -60,3 +63,34 @@ def test_create_client_invalid_library_type_exits(
         main._create_client()
 
     assert "must be 'user' or 'group'" in str(exc_info.value)
+
+
+def test_main_registers_tools_runs_server_and_closes_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_called = False
+    original_asyncio_run = package_main.asyncio.run
+
+    class FakeClient:
+        async def close(self) -> None:
+            nonlocal close_called
+            close_called = True
+
+    fake_client = FakeClient()
+    fake_mcp = MagicMock()
+
+    monkeypatch.setenv("ZOTERO_API_KEY", "key-123")
+    monkeypatch.setenv("ZOTERO_LIBRARY_ID", "456")
+
+    with (
+        patch.object(package_main, "FastMCP", return_value=fake_mcp),
+        patch.object(package_main, "_create_client", return_value=fake_client),
+        patch.object(package_main, "register_tools") as register_tools,
+        patch.object(package_main.asyncio, "run", side_effect=original_asyncio_run) as asyncio_run,
+    ):
+        package_main.main()
+
+    register_tools.assert_called_once_with(fake_mcp, fake_client)
+    fake_mcp.run.assert_called_once_with(transport="stdio")
+    asyncio_run.assert_called_once()
+    assert close_called is True
