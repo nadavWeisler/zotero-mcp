@@ -32,6 +32,7 @@ from .formatters import (
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+# Text mode returns a human-readable string; JSON mode returns a structured dict.
 ToolResult = str | dict[str, Any]
 OUTPUT_FORMATS = {"text", "json"}
 SORT_FIELDS = {"dateModified", "title", "creator", "date"}

@@ -232,7 +232,7 @@ Most list tools support:
 
 ## Known limitations
 
-- **Read-only only**: creating, editing, or deleting items is not supported.
+- **Read-only**: creating, editing, or deleting items is not supported.
 - **Attachment binaries**: attachment file content is not downloaded.
 - **Saved searches**: the server exposes saved searches as special collections and uses their keys for item listing.
 - **Single library scope**: one configured user or group library per server process.

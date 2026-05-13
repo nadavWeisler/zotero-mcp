@@ -82,9 +82,10 @@ class ZoteroClient:
         if not raw_detail:
             return ""
         normalized_detail = " ".join(raw_detail.split())
-        truncated_detail = normalized_detail
-        if len(truncated_detail) > 200:
-            truncated_detail = truncated_detail[:200] + "…"
+        if len(normalized_detail) > 200:
+            truncated_detail = normalized_detail[:200] + "…"
+        else:
+            truncated_detail = normalized_detail
         return f" Details: {truncated_detail}"
 
     @staticmethod
@@ -205,7 +206,8 @@ class ZoteroClient:
 
     @staticmethod
     def _extract_total(headers: dict[str, str], data: Any) -> int:
-        return int(headers.get("total-results", len(data) if isinstance(data, list) else 1))
+        fallback_total = len(data) if isinstance(data, list) else 1
+        return int(headers.get("total-results", fallback_total))
 
     async def _get_collections_page(
         self, start: int = 0, limit: int = DEFAULT_LIMIT
