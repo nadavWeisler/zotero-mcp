@@ -86,7 +86,8 @@ def item_to_record(item: dict[str, Any], expanded: bool = False) -> dict[str, An
     """Normalize a Zotero item into a structured record."""
     data = item.get("data", {})
     date = _optional_text(data.get("date"))
-    note_text = _optional_text(_strip_html(data.get("note", "")))
+    raw_note = data.get("note", "")
+    note_text = _optional_text(_strip_html(raw_note))
     abstract = _optional_text(data.get("abstractNote"))
     tags = [
         tag_name

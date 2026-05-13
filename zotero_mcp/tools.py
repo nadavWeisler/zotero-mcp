@@ -42,11 +42,10 @@ EXPORT_FORMATS = {"bibtex", "biblatex", "ris", "mods", "refer", "csljson"}
 
 
 def _error_result(exc: ZoteroError | ValueError, output_format: str) -> ToolResult:
-    message = f"Error: {exc}"
     if output_format == "json":
         status_code = exc.status_code if isinstance(exc, ZoteroError) else 400
         return {"error": str(exc), "status_code": status_code}
-    return message
+    return f"Error: {exc}"
 
 
 def _validate_output_format(output_format: str) -> None:

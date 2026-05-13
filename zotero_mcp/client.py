@@ -78,13 +78,14 @@ class ZoteroClient:
         await self.close()
 
     def _error_detail(self, response: httpx.Response) -> str:
-        detail = response.text.strip()
-        if not detail:
+        raw_detail = response.text.strip()
+        if not raw_detail:
             return ""
-        detail = " ".join(detail.split())
-        if len(detail) > 200:
-            detail = detail[:200] + "…"
-        return f" Details: {detail}"
+        normalized_detail = " ".join(raw_detail.split())
+        truncated_detail = normalized_detail
+        if len(truncated_detail) > 200:
+            truncated_detail = truncated_detail[:200] + "…"
+        return f" Details: {truncated_detail}"
 
     @staticmethod
     def _get_retry_after(response: httpx.Response) -> int:
