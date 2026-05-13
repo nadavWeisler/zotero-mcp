@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import sys
 
@@ -10,6 +12,8 @@ from mcp.server.fastmcp import FastMCP
 from zotero_mcp import config as zconfig
 from zotero_mcp.client import ZoteroClient
 from zotero_mcp.tools import register_tools
+
+logger = logging.getLogger(__name__)
 
 
 def _create_client() -> ZoteroClient:
@@ -48,10 +52,17 @@ def _create_client() -> ZoteroClient:
 
 def main() -> None:
     """Run the MCP server over stdio."""
+    logging.basicConfig(level=os.environ.get("ZOTERO_MCP_LOG_LEVEL", "WARNING"))
     mcp = FastMCP("zotero")
     client = _create_client()
     register_tools(mcp, client)
-    mcp.run(transport="stdio")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        try:
+            asyncio.run(client.close())
+        except RuntimeError:
+            logger.debug("Skipping Zotero client close because an event loop is active.")
 
 
 if __name__ == "__main__":

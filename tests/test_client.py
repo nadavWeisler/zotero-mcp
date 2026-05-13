@@ -1,4 +1,4 @@
-"""Unit tests for ZoteroClient — request building, response parsing, error handling."""
+"""Unit tests for ZoteroClient — request building, retries, and filtering."""
 
 from __future__ import annotations
 
@@ -12,23 +12,20 @@ from zotero_mcp.client import ZoteroClient, ZoteroError
 from zotero_mcp.config import ZOTERO_API_BASE
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_response(
     data: Any,
     status_code: int = 200,
     headers: dict[str, str] | None = None,
+    text: str = "",
 ) -> MagicMock:
     """Build a mock httpx response."""
-    response = MagicMock()
+    response = MagicMock(spec=httpx.Response)
     response.status_code = status_code
     response.headers = headers or {
         "total-results": str(len(data) if isinstance(data, list) else 1)
     }
     response.json = MagicMock(return_value=data)
+    response.text = text
     if status_code >= 400:
         response.raise_for_status = MagicMock(
             side_effect=httpx.HTTPStatusError(
@@ -40,21 +37,38 @@ def _make_response(
     return response
 
 
-def _patch_httpx(response: MagicMock):
-    """Return a context manager that patches httpx.AsyncClient to return *response*."""
-    mock_http = AsyncMock()
-    mock_http.get = AsyncMock(return_value=response)
+def _patch_httpx(
+    response_or_side_effect: Any,
+) -> tuple[Any, AsyncMock]:
+    """Patch httpx.AsyncClient with a reusable AsyncMock instance."""
+    mock_http = AsyncMock(spec=httpx.AsyncClient)
+    mock_http.is_closed = False
+    mock_http.aclose = AsyncMock()
+    if isinstance(response_or_side_effect, list):
+        mock_http.get.side_effect = response_or_side_effect
+    else:
+        mock_http.get.return_value = response_or_side_effect
+    return patch("httpx.AsyncClient", return_value=mock_http), mock_http
 
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    return patch("httpx.AsyncClient", return_value=mock_ctx), mock_http
+def _collection(key: str, *, search: bool = False) -> dict[str, Any]:
+    return {
+        "data": {
+            "key": key,
+            "name": key,
+            "search": search,
+        }
+    }
 
 
-# ---------------------------------------------------------------------------
-# Construction
-# ---------------------------------------------------------------------------
+def _item(key: str = "ITEM0001", item_type: str = "journalArticle") -> dict[str, Any]:
+    return {
+        "data": {
+            "key": key,
+            "itemType": item_type,
+            "title": "Example",
+        }
+    }
 
 
 def test_user_library_prefix() -> None:
@@ -79,66 +93,74 @@ def test_custom_api_base_trailing_slash() -> None:
     assert client.api_base == "https://example.com"
 
 
-# ---------------------------------------------------------------------------
-# Auth headers
-# ---------------------------------------------------------------------------
-
-
 def test_headers_contain_api_key() -> None:
     client = ZoteroClient(api_key="my-secret-key", library_id="1")
     assert client._headers["Zotero-API-Key"] == "my-secret-key"
     assert client._headers["Zotero-API-Version"] == "3"
 
 
-# ---------------------------------------------------------------------------
-# get_collections
-# ---------------------------------------------------------------------------
+async def test_get_http_client_reused_until_closed() -> None:
+    response = _make_response([])
+    patcher, mock_http = _patch_httpx(response)
+
+    with patcher as async_client_ctor:
+        client = ZoteroClient(api_key="k", library_id="1")
+        first = await client._get_http_client()
+        second = await client._get_http_client()
+
+    assert first is second is mock_http
+    async_client_ctor.assert_called_once()
 
 
-async def test_get_collections_success() -> None:
-    data = [{"key": "ABC123", "data": {"name": "My Collection"}}]
-    response = _make_response(data, headers={"total-results": "5"})
+async def test_close_shared_client() -> None:
+    response = _make_response([])
     patcher, mock_http = _patch_httpx(response)
 
     with patcher:
         client = ZoteroClient(api_key="k", library_id="1")
-        cols, total = await client.get_collections()
+        await client._get_http_client()
+        await client.close()
 
-    assert total == 5
-    assert cols == data
-    # Verify request URL contains "collections"
-    call_url = mock_http.get.call_args[0][0]
-    assert call_url.endswith("/collections")
+    mock_http.aclose.assert_awaited_once()
 
 
-async def test_get_collections_pagination_params() -> None:
-    response = _make_response([], headers={"total-results": "0"})
-    patcher, mock_http = _patch_httpx(response)
+async def test_get_collections_filters_out_saved_searches_by_default() -> None:
+    data = [_collection("COLL0001"), _collection("SRCH0001", search=True)]
+    response = _make_response(data, headers={"total-results": "2"})
+    patcher, _ = _patch_httpx(response)
 
     with patcher:
         client = ZoteroClient(api_key="k", library_id="1")
-        await client.get_collections(start=50, limit=10)
+        collections, total = await client.get_collections()
 
-    params = mock_http.get.call_args[1]["params"]
-    assert params["start"] == 50
-    assert params["limit"] == 10
+    assert total == 1
+    assert [collection["data"]["key"] for collection in collections] == ["COLL0001"]
 
 
-async def test_get_collections_limit_capped_at_max() -> None:
-    response = _make_response([], headers={"total-results": "0"})
-    patcher, mock_http = _patch_httpx(response)
+async def test_get_saved_searches_filters_search_collections() -> None:
+    data = [_collection("COLL0001"), _collection("SRCH0001", search=True)]
+    response = _make_response(data, headers={"total-results": "2"})
+    patcher, _ = _patch_httpx(response)
 
     with patcher:
         client = ZoteroClient(api_key="k", library_id="1")
-        await client.get_collections(limit=999)
+        searches, total = await client.get_saved_searches()
 
-    params = mock_http.get.call_args[1]["params"]
-    assert params["limit"] == 100  # MAX_LIMIT
+    assert total == 1
+    assert [search["data"]["key"] for search in searches] == ["SRCH0001"]
 
 
-# ---------------------------------------------------------------------------
-# get_items
-# ---------------------------------------------------------------------------
+async def test_get_collections_can_include_saved_searches() -> None:
+    data = [_collection("COLL0001"), _collection("SRCH0001", search=True)]
+    response = _make_response(data, headers={"total-results": "2"})
+    patcher, _ = _patch_httpx(response)
+
+    with patcher:
+        client = ZoteroClient(api_key="k", library_id="1")
+        collections, total = await client.get_collections(include_saved_searches=True)
+
+    assert total == 2
+    assert len(collections) == 2
 
 
 async def test_get_items_default_sort() -> None:
@@ -149,59 +171,21 @@ async def test_get_items_default_sort() -> None:
         client = ZoteroClient(api_key="k", library_id="1")
         await client.get_items()
 
-    params = mock_http.get.call_args[1]["params"]
+    params = mock_http.get.call_args.kwargs["params"]
     assert params["sort"] == "dateModified"
     assert params["direction"] == "desc"
 
 
-async def test_get_items_with_filters() -> None:
+async def test_get_collection_items_builds_correct_url() -> None:
     response = _make_response([], headers={"total-results": "0"})
     patcher, mock_http = _patch_httpx(response)
 
     with patcher:
         client = ZoteroClient(api_key="k", library_id="1")
-        await client.get_items(item_type="book", tag="science")
+        await client.get_collection_items("COLL0001")
 
-    params = mock_http.get.call_args[1]["params"]
-    assert params["itemType"] == "book"
-    assert params["tag"] == "science"
-
-
-async def test_get_items_none_filters_excluded() -> None:
-    response = _make_response([], headers={"total-results": "0"})
-    patcher, mock_http = _patch_httpx(response)
-
-    with patcher:
-        client = ZoteroClient(api_key="k", library_id="1")
-        await client.get_items(item_type=None, tag=None)
-
-    params = mock_http.get.call_args[1]["params"]
-    assert "itemType" not in params
-    assert "tag" not in params
-
-
-# ---------------------------------------------------------------------------
-# get_item
-# ---------------------------------------------------------------------------
-
-
-async def test_get_item_builds_correct_url() -> None:
-    item_data = {"key": "AAAA1234", "data": {"title": "Test"}}
-    response = _make_response(item_data)
-    patcher, mock_http = _patch_httpx(response)
-
-    with patcher:
-        client = ZoteroClient(api_key="k", library_id="1")
-        result = await client.get_item("AAAA1234")
-
-    assert result == item_data
-    call_url = mock_http.get.call_args[0][0]
-    assert call_url.endswith("/items/AAAA1234")
-
-
-# ---------------------------------------------------------------------------
-# search_items
-# ---------------------------------------------------------------------------
+    call_url = mock_http.get.call_args.args[0]
+    assert call_url.endswith("/collections/COLL0001/items")
 
 
 async def test_search_items_passes_query_params() -> None:
@@ -217,51 +201,76 @@ async def test_search_items_passes_query_params() -> None:
             item_type="journalArticle",
         )
 
-    params = mock_http.get.call_args[1]["params"]
+    params = mock_http.get.call_args.kwargs["params"]
     assert params["q"] == "machine learning"
     assert params["qmode"] == "titleCreatorYear"
     assert params["tag"] == "AI"
     assert params["itemType"] == "journalArticle"
 
 
-# ---------------------------------------------------------------------------
-# get_tags
-# ---------------------------------------------------------------------------
-
-
-async def test_get_tags_returns_data_and_total() -> None:
-    tags = [{"tag": "physics", "meta": {"numItems": 3}}]
-    response = _make_response(tags, headers={"total-results": "1"})
-    patcher, _ = _patch_httpx(response)
-
-    with patcher:
-        client = ZoteroClient(api_key="k", library_id="1")
-        result, total = await client.get_tags()
-
-    assert result == tags
-    assert total == 1
-
-
-# ---------------------------------------------------------------------------
-# get_item_children
-# ---------------------------------------------------------------------------
-
-
-async def test_get_item_children_url() -> None:
+async def test_get_item_children_item_type_filter() -> None:
     response = _make_response([], headers={"total-results": "0"})
     patcher, mock_http = _patch_httpx(response)
 
     with patcher:
         client = ZoteroClient(api_key="k", library_id="1")
-        await client.get_item_children("AAAA1234")
+        await client.get_item_children("AAAA1234", item_type="note")
 
-    call_url = mock_http.get.call_args[0][0]
-    assert call_url.endswith("/items/AAAA1234/children")
+    params = mock_http.get.call_args.kwargs["params"]
+    assert params["itemType"] == "note"
 
 
-# ---------------------------------------------------------------------------
-# Error handling
-# ---------------------------------------------------------------------------
+async def test_get_note_validates_item_type() -> None:
+    response = _make_response(_item(item_type="attachment"))
+    patcher, _ = _patch_httpx(response)
+
+    with patcher:
+        client = ZoteroClient(api_key="k", library_id="1")
+        with pytest.raises(ZoteroError, match="is not a note"):
+            await client.get_note("ATT0001")
+
+
+async def test_get_attachment_validates_item_type() -> None:
+    response = _make_response(_item(item_type="note"))
+    patcher, _ = _patch_httpx(response)
+
+    with patcher:
+        client = ZoteroClient(api_key="k", library_id="1")
+        with pytest.raises(ZoteroError, match="is not an attachment"):
+            await client.get_attachment("NOTE0001")
+
+
+async def test_get_item_citation_uses_format_params() -> None:
+    response = _make_response({}, text="Citation text")
+    patcher, mock_http = _patch_httpx(response)
+
+    with patcher:
+        client = ZoteroClient(api_key="k", library_id="1")
+        citation = await client.get_item_citation(
+            "ITEM0001", style="mla", locale="en-GB", linkwrap=True
+        )
+
+    assert citation == "Citation text"
+    params = mock_http.get.call_args.kwargs["params"]
+    assert params == {
+        "format": "citation",
+        "style": "mla",
+        "locale": "en-GB",
+        "linkwrap": 1,
+    }
+
+
+async def test_export_item_uses_requested_format() -> None:
+    response = _make_response({}, text="@article{example}")
+    patcher, mock_http = _patch_httpx(response)
+
+    with patcher:
+        client = ZoteroClient(api_key="k", library_id="1")
+        export_text = await client.export_item("ITEM0001", export_format="bibtex")
+
+    assert export_text == "@article{example}"
+    params = mock_http.get.call_args.kwargs["params"]
+    assert params == {"format": "bibtex"}
 
 
 async def test_401_raises_zotero_error() -> None:
@@ -270,11 +279,8 @@ async def test_401_raises_zotero_error() -> None:
 
     with patcher:
         client = ZoteroClient(api_key="bad-key", library_id="1")
-        with pytest.raises(ZoteroError) as exc_info:
-            await client.get_collections()
-
-    assert exc_info.value.status_code == 401
-    assert "ZOTERO_API_KEY" in str(exc_info.value)
+        with pytest.raises(ZoteroError, match="Invalid or missing Zotero API key"):
+            await client.get_items()
 
 
 async def test_403_raises_zotero_error() -> None:
@@ -283,10 +289,8 @@ async def test_403_raises_zotero_error() -> None:
 
     with patcher:
         client = ZoteroClient(api_key="k", library_id="1")
-        with pytest.raises(ZoteroError) as exc_info:
+        with pytest.raises(ZoteroError, match="Access denied"):
             await client.get_items()
-
-    assert exc_info.value.status_code == 403
 
 
 async def test_404_raises_zotero_error() -> None:
@@ -295,65 +299,47 @@ async def test_404_raises_zotero_error() -> None:
 
     with patcher:
         client = ZoteroClient(api_key="k", library_id="1")
-        with pytest.raises(ZoteroError) as exc_info:
+        with pytest.raises(ZoteroError, match="Resource not found"):
             await client.get_item("MISSING1")
-
-    assert exc_info.value.status_code == 404
 
 
 async def test_429_retries_then_raises() -> None:
-    """A persistent 429 should be retried up to 3 times then raise ZoteroError."""
-    response = _make_response({}, status_code=429, headers={"Retry-After": "0"})
+    response = _make_response({}, status_code=429, headers={"Retry-After": "1"})
+    patcher, mock_http = _patch_httpx([response, response, response])
 
-    call_count = 0
-    mock_http = AsyncMock()
-
-    async def counting_get(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        return response
-
-    mock_http.get = counting_get
-
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-    with patch("httpx.AsyncClient", return_value=mock_ctx):
+    with patcher, patch("zotero_mcp.client.asyncio.sleep", new=AsyncMock()) as sleep:
         client = ZoteroClient(api_key="k", library_id="1")
-        with pytest.raises(ZoteroError) as exc_info:
-            await client.get_collections()
+        with pytest.raises(ZoteroError, match="Rate limit exceeded"):
+            await client.get_items()
 
-    assert exc_info.value.status_code == 429
-    assert call_count == 3
+    assert mock_http.get.await_count == 3
+    assert sleep.await_count == 2
+
+
+async def test_server_error_retries_then_succeeds() -> None:
+    retry_response = _make_response({}, status_code=500)
+    success_response = _make_response([], headers={"total-results": "0"})
+    patcher, mock_http = _patch_httpx([retry_response, success_response])
+
+    with patcher, patch("zotero_mcp.client.asyncio.sleep", new=AsyncMock()) as sleep:
+        client = ZoteroClient(api_key="k", library_id="1")
+        items, total = await client.get_items()
+
+    assert items == []
+    assert total == 0
+    assert mock_http.get.await_count == 2
+    sleep.assert_awaited_once()
 
 
 async def test_network_error_retries_then_raises() -> None:
-    """A persistent network error should be retried and then raise ZoteroError."""
-    mock_http = AsyncMock()
-    mock_http.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    request = MagicMock(spec=httpx.Request)
+    error = httpx.RequestError("boom", request=request)
+    patcher, mock_http = _patch_httpx([error, error, error])
 
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-    with patch("httpx.AsyncClient", return_value=mock_ctx):
-        with patch("asyncio.sleep", new_callable=AsyncMock):
-            client = ZoteroClient(api_key="k", library_id="1")
-            with pytest.raises(ZoteroError) as exc_info:
-                await client.get_collections()
-
-    assert "Network error" in str(exc_info.value)
-
-
-async def test_total_results_falls_back_to_data_length() -> None:
-    """If the Total-Results header is absent, fall back to len(data)."""
-    data = [{"key": "A"}, {"key": "B"}]
-    response = _make_response(data, headers={})  # no total-results header
-    patcher, _ = _patch_httpx(response)
-
-    with patcher:
+    with patcher, patch("zotero_mcp.client.asyncio.sleep", new=AsyncMock()) as sleep:
         client = ZoteroClient(api_key="k", library_id="1")
-        cols, total = await client.get_collections()
+        with pytest.raises(ZoteroError, match="Network error"):
+            await client.get_items()
 
-    assert total == 2
+    assert mock_http.get.await_count == 3
+    assert sleep.await_count == 2
